@@ -425,8 +425,7 @@ async def main():
         
         # Importar el token desde config.py
         try:
-            from config import DISCORD_TOKEN
-            token = DISCORD_TOKEN
+            token = os.getenv("DISCORD_TOKEN")
             if token == 'TU_TOKEN_AQUI':
                 print("❌ Error: Debes configurar tu token en config.py")
                 print("Abre config.py y reemplaza 'TU_TOKEN_AQUI' con tu token real.")
