@@ -31,7 +31,7 @@ ffmpeg_options = {
 
 # Buscar FFmpeg en ubicaciones comunes
 import shutil
-ffmpeg_path = shutil.which('ffmpeg')
+ffmpeg_path = '/usr/bin/ffmpeg'
 if not ffmpeg_path:
     # Intentar ubicaciones comunes de FFmpeg
     possible_paths = [
