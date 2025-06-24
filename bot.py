@@ -60,9 +60,11 @@ def get_ytdl_options():
         'skip_unavailable_fragments': True,
         'socket_timeout': 30,
         'retries': 5,
-        # Configuraciones específicas para YouTube
+        # Configuraciones específicas para YouTube y otros servicios
         'youtube_include_dash_manifest': False,
         'extract_flat': False,
+        'prefer_free_formats': True,
+        'no_check_certificate': True,
         # Nuevas opciones anti-detección
         'age_limit': None,
         'geo_bypass': True,
@@ -79,8 +81,8 @@ MAX_REQUESTS_PER_MINUTE = 10
 ytdl_format_options = get_ytdl_options()
 
 ffmpeg_options = {
-    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
-    'options': '-vn'
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
+    'options': '-vn -bufsize 1024k'
 }
 
 # Buscar FFmpeg en ubicaciones comunes
@@ -234,25 +236,44 @@ class YTDLSource(discord.PCMVolumeTransformer):
         ytdl_options = get_ytdl_options()
         ytdl = yt_dlp.YoutubeDL(ytdl_options)
         
-        data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+        try:
+            print(f"🔄 Extrayendo info de: {url[:50]}...")
+            data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
+            print(f"✅ Info extraída exitosamente")
+        except Exception as e:
+            print(f"❌ Error al extraer info: {e}")
+            raise e
 
         if 'entries' in data:
             # Toma la primera entrada si es una playlist
             data = data['entries'][0]
 
         filename = data['url'] if stream else ytdl.prepare_filename(data)
+        print(f"🎵 Archivo de audio: {filename[:100]}...")
         
         # Usar la ruta de FFmpeg encontrada si está disponible
         try:
+            print(f"🔧 Creando reproductor con FFmpeg: {ffmpeg_path}")
             if ffmpeg_path and ffmpeg_path != 'ffmpeg':
-                return cls(discord.FFmpegPCMAudio(filename, executable=ffmpeg_path, **ffmpeg_options), data=data)
+                audio_source = discord.FFmpegPCMAudio(filename, executable=ffmpeg_path, **ffmpeg_options)
             else:
-                return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+                audio_source = discord.FFmpegPCMAudio(filename, **ffmpeg_options)
+            
+            print(f"✅ Reproductor creado exitosamente")
+            return cls(audio_source, data=data)
+            
         except Exception as e:
-            if "was not found" in str(e) or "ffmpeg" in str(e).lower():
-                raise Exception(f"FFmpeg no está instalado o no se puede encontrar. Error: {str(e)}")
+            error_str = str(e)
+            print(f"❌ Error al crear reproductor FFmpeg: {error_str}")
+            
+            if "was not found" in error_str or "ffmpeg" in error_str.lower():
+                raise Exception(f"FFmpeg no está instalado o no se puede encontrar. Error: {error_str}")
+            elif "invalid" in error_str.lower() or "format" in error_str.lower():
+                raise Exception(f"Formato de audio no soportado o URL inválida. Error: {error_str}")
+            elif "http" in error_str.lower() or "network" in error_str.lower():
+                raise Exception(f"Error de red al acceder al audio. Error: {error_str}")
             else:
-                raise e
+                raise Exception(f"Error de reproducción: {error_str}")
 
 class MusicQueue:
     def __init__(self):
@@ -332,7 +353,9 @@ class MusicBot(commands.Cog):
                 queue.is_playing = False
                 await self.play_next(ctx)
             except Exception as e:
-                await ctx.send(f"❌ **Error al reproducir la canción:** {str(e)}")
+                error_msg = str(e)
+                print(f"❌ Error detallado en play_next: {error_msg}")
+                await ctx.send(f"❌ **Error al reproducir la canción:** {error_msg[:200]}")
                 queue.is_playing = False
                 await self.play_next(ctx)
 
@@ -857,6 +880,49 @@ class MusicBot(commands.Cog):
         
         await ctx.send(embed=embed)
 
+    @commands.command(name='testaudio', aliases=['testplay'])
+    async def test_audio(self, ctx):
+        """Prueba la reproducción de audio con una URL de prueba"""
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
+            await ctx.send("❌ **Debes conectarte a un canal de voz primero con `!join`.**")
+            return
+        
+        # URL de prueba conocida (un archivo de audio corto)
+        test_url = "https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3"
+        
+        try:
+            await ctx.send("🔧 **Probando reproducción de audio...**")
+            
+            # Crear reproductor de audio directamente
+            print(f"🔧 Probando reproducción con URL: {test_url}")
+            
+            audio_source = discord.FFmpegPCMAudio(
+                test_url, 
+                executable=ffmpeg_path, 
+                **ffmpeg_options
+            )
+            
+            def after_test(error):
+                if error:
+                    print(f"❌ Error en test de audio: {error}")
+                else:
+                    print("✅ Test de audio completado sin errores")
+            
+            ctx.voice_client.play(audio_source, after=after_test)
+            
+            await ctx.send("✅ **Test de audio iniciado. ¿Puedes escuchar algo?**")
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Error en test de audio: {error_msg}")
+            
+            embed = discord.Embed(
+                title="❌ Error en Test de Audio",
+                description=f"Error al probar reproducción: {error_msg[:300]}",
+                color=0xff0000
+            )
+            await ctx.send(embed=embed)
+
 # Configuración del bot
 intents = discord.Intents.default()
 intents.message_content = True
@@ -894,6 +960,7 @@ async def help_command(ctx):
         ("`!reconnect`", "Reconecta el bot si hay problemas"),
         ("`!diagnostics`", "Muestra información de diagnóstico del sistema"),
         ("`!testffmpeg`", "Prueba si FFmpeg está funcionando correctamente"),
+        ("`!testaudio`", "Prueba la reproducción de audio con una URL de prueba"),
         ("`!help`", "Muestra este mensaje de ayuda")
     ]
     
