@@ -22,6 +22,22 @@ ytdl_format_options = {
     'no_warnings': True,
     'default_search': 'auto',
     'source_address': '0.0.0.0',
+    # Configuraciones para evitar detección de bot
+    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'referer': 'https://www.youtube.com/',
+    'http_headers': {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-us,en;q=0.5',
+        'Accept-Encoding': 'gzip,deflate',
+        'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+        'Keep-Alive': '115',
+        'Connection': 'keep-alive',
+    },
+    # Configuraciones adicionales para estabilidad
+    'extractor_retries': 3,
+    'fragment_retries': 3,
+    'skip_unavailable_fragments': True,
 }
 
 ffmpeg_options = {
@@ -50,6 +66,52 @@ else:
     print("⚠️  FFmpeg no encontrado. Descárgalo desde https://ffmpeg.org/")
 
 ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
+
+async def search_song(search_query, loop=None):
+    """Función mejorada para buscar canciones con manejo de errores"""
+    loop = loop or asyncio.get_event_loop()
+    
+    # Lista de prefijos para intentar diferentes tipos de búsqueda
+    search_attempts = [
+        f"ytsearch1:{search_query}",  # Búsqueda específica de YouTube
+        search_query,                 # Búsqueda automática
+        f"ytsearch:{search_query}",   # Búsqueda alternativa de YouTube
+    ]
+    
+    for attempt, search_term in enumerate(search_attempts, 1):
+        try:
+            print(f"Intento {attempt}: Buscando con '{search_term[:50]}...'")
+            
+            data = await asyncio.wait_for(
+                loop.run_in_executor(None, lambda: ytdl.extract_info(search_term, download=False)),
+                timeout=25.0
+            )
+            
+            if 'entries' in data and len(data['entries']) > 0:
+                # Tomar la primera entrada válida
+                for entry in data['entries']:
+                    if entry and entry.get('url'):
+                        return entry
+                continue
+            elif data and data.get('url'):
+                return data
+                
+        except asyncio.TimeoutError:
+            print(f"Timeout en intento {attempt}")
+            continue
+        except Exception as e:
+            error_msg = str(e).lower()
+            print(f"Error en intento {attempt}: {e}")
+            
+            # Si es el error específico de bot de YouTube, intentar con otros métodos
+            if "sign in to confirm" in error_msg or "bot" in error_msg:
+                continue
+            elif attempt == len(search_attempts):  # Último intento
+                raise e
+            else:
+                continue
+    
+    raise Exception("No se pudieron encontrar resultados después de múltiples intentos")
 
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
@@ -212,24 +274,25 @@ class MusicBot(commands.Cog):
             return
 
         try:
-            # Buscar la canción
+            # Buscar la canción con la función mejorada
             search_msg = await ctx.send("🔍 **Buscando canción...**")
             
-            loop = asyncio.get_event_loop()
             try:
-                data = await asyncio.wait_for(
-                    loop.run_in_executor(None, lambda: ytdl.extract_info(search, download=False)),
-                    timeout=20.0
-                )
+                data = await search_song(search, loop=self.bot.loop)
             except asyncio.TimeoutError:
                 await search_msg.edit(content="❌ **Búsqueda demoró demasiado. Intenta con otra canción.**")
                 return
+            except Exception as e:
+                error_msg = str(e).lower()
+                if "sign in to confirm" in error_msg or "bot" in error_msg:
+                    await search_msg.edit(content="❌ **YouTube está bloqueando las búsquedas. Intenta con una URL directa o espera unos minutos.**")
+                else:
+                    await search_msg.edit(content=f"❌ **Error al buscar:** {str(e)}")
+                return
 
-            if 'entries' in data:
-                if len(data['entries']) == 0:
-                    await search_msg.edit(content="❌ **No se encontraron resultados.**")
-                    return
-                data = data['entries'][0]
+            if not data:
+                await search_msg.edit(content="❌ **No se encontraron resultados.**")
+                return
 
             song_info = {
                 'title': data.get('title', 'Título desconocido'),
@@ -258,7 +321,68 @@ class MusicBot(commands.Cog):
                 await search_msg.edit(content="", embed=embed)
 
         except Exception as e:
-            await ctx.send(f"❌ **Error al buscar la canción:** {str(e)}")
+            await ctx.send(f"❌ **Error inesperado:** {str(e)}")
+
+    @commands.command(name='url')
+    async def play_url(self, ctx, *, url):
+        """Añade una canción usando URL directa (para evitar problemas de búsqueda)"""
+        
+        # Verificar que el bot esté conectado a un canal de voz
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
+            await ctx.send("❌ **El bot no está conectado a un canal de voz. Usa `!join` primero.**")
+            return
+
+        try:
+            # Procesar URL directamente
+            search_msg = await ctx.send("🔗 **Procesando URL...**")
+            
+            loop = asyncio.get_event_loop()
+            try:
+                data = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False)),
+                    timeout=25.0
+                )
+            except asyncio.TimeoutError:
+                await search_msg.edit(content="❌ **Procesamiento demoró demasiado.**")
+                return
+            except Exception as e:
+                await search_msg.edit(content=f"❌ **Error al procesar URL:** {str(e)}")
+                return
+
+            if 'entries' in data:
+                if len(data['entries']) == 0:
+                    await search_msg.edit(content="❌ **URL no válida o sin contenido.**")
+                    return
+                data = data['entries'][0]
+
+            song_info = {
+                'title': data.get('title', 'Título desconocido'),
+                'url': data.get('webpage_url', data.get('url')),
+                'duration': data.get('duration'),
+                'uploader': data.get('uploader', 'Desconocido')
+            }
+
+            queue = self.get_queue(ctx.guild.id)
+            queue.add(song_info)
+
+            # Si no hay música reproduciéndose, empezar a reproducir
+            if not queue.is_playing and not ctx.voice_client.is_playing():
+                await search_msg.delete()
+                await self.play_next(ctx)
+            else:
+                # Mostrar que se añadió a la cola
+                position = len(queue.queue)
+                duration_str = f"{song_info['duration'] // 60}:{song_info['duration'] % 60:02d}" if song_info['duration'] else "Desconocida"
+                
+                embed = discord.Embed(
+                    title="📋 Añadida a la cola (URL)",
+                    description=f"**{song_info['title']}**\n⏱️ Duración: {duration_str}\n📍 Posición en cola: {position}",
+                    color=0x0099ff
+                )
+                await search_msg.edit(content="", embed=embed)
+
+        except Exception as e:
+            await ctx.send(f"❌ **Error al procesar URL:** {str(e)}")
 
     @commands.command(name='pause')
     async def pause(self, ctx):
@@ -417,7 +541,8 @@ async def help_command(ctx):
     
     commands_list = [
         ("`!join [canal]`", "Conecta el bot a un canal de voz (usa tu canal actual si no especificas)"),
-        ("`!play [búsqueda/URL]`", "Añade una canción a la cola de reproducción"),
+        ("`!play [búsqueda]`", "Busca y añade una canción a la cola"),
+        ("`!url [URL_directa]`", "Añade una canción usando URL directa (recomendado si falla !play)"),
         ("`!pause`", "Pausa la música actual"),
         ("`!resume`", "Reanuda la música pausada"),
         ("`!skip`", "Salta a la siguiente canción"),
