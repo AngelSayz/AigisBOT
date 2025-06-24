@@ -94,9 +94,81 @@ class MusicBot(commands.Cog):
                 return
             await ctx.voice_client.move_to(voice_channel)
         else:
-            await voice_channel.connect()
+            try:
+                await voice_channel.connect(timeout=15.0, reconnect=True)
+            except discord.errors.ConnectionClosed as e:
+                if "4006" in str(e):
+                    await ctx.send("❌ **Error de conexión Discord 4006**\n" +
+                                 "🔧 **Esto es común en Railway/Heroku. Prueba:**\n" +
+                                 "• Espera 2-3 minutos y vuelve a intentar\n" +
+                                 "• Usa `!forceconnect` si persiste el problema\n" +
+                                 "• El bot puede funcionar intermitentemente en hosting gratuito")
+                    return
+                else:
+                    await ctx.send(f"❌ **Error de conexión:** {str(e)}")
+                    return
+            except Exception as e:
+                await ctx.send(f"❌ **Error al conectar:** {str(e)}")
+                return
         
         await ctx.send(f"✅ **Conectado a {voice_channel.name}**")
+
+    @commands.command(name='forceconnect', aliases=['force'])
+    async def force_connect(self, ctx, *, channel_name=None):
+        """Conexión más agresiva para problemas de error 4006"""
+        if channel_name:
+            voice_channel = discord.utils.get(ctx.guild.voice_channels, name=channel_name)
+            if not voice_channel:
+                await ctx.send(f"❌ **No se encontró el canal '{channel_name}'**")
+                return
+        else:
+            if not ctx.author.voice:
+                await ctx.send("❌ **Debes estar en un canal de voz**")
+                return
+            voice_channel = ctx.author.voice.channel
+        
+        await ctx.send("🔄 **Intentando conexión forzada...**")
+        
+        # Limpiar conexión existente
+        if ctx.voice_client:
+            try:
+                await ctx.voice_client.disconnect(force=True)
+            except:
+                pass
+            await asyncio.sleep(2)
+        
+        # Intentar múltiples veces
+        for attempt in range(3):
+            try:
+                await ctx.send(f"⚡ **Intento {attempt + 1}/3**")
+                voice_client = await voice_channel.connect(
+                    timeout=20.0 + (attempt * 5),
+                    reconnect=True
+                )
+                
+                # Verificar conexión
+                await asyncio.sleep(2)
+                if voice_client.is_connected():
+                    await ctx.send(f"✅ **¡Conectado exitosamente a {voice_channel.name}!**")
+                    return
+                else:
+                    await voice_client.disconnect()
+                    
+            except discord.errors.ConnectionClosed as e:
+                if "4006" in str(e):
+                    wait_time = 5 * (attempt + 1)
+                    await ctx.send(f"⚠️ **Error 4006 - Esperando {wait_time}s...**")
+                    await asyncio.sleep(wait_time)
+                else:
+                    await ctx.send(f"⚠️ **Error: {str(e)[:100]}**")
+                    await asyncio.sleep(3)
+            except Exception as e:
+                await ctx.send(f"⚠️ **Error en intento {attempt + 1}: {str(e)[:100]}**")
+                await asyncio.sleep(3)
+        
+        await ctx.send("❌ **No se pudo conectar después de 3 intentos**\n" +
+                      "💡 **El error 4006 es común en Railway/hosting gratuito**\n" +
+                      "🕒 **Espera 5-10 minutos e intenta de nuevo**")
 
     @commands.command(name='play', aliases=['p'])
     async def play(self, ctx, *, search):
@@ -221,6 +293,51 @@ class MusicBot(commands.Cog):
         else:
             await ctx.send("❌ **No estoy conectado a ningún canal**")
 
+    @commands.command(name='status', aliases=['estado'])
+    async def status(self, ctx):
+        """Muestra el estado actual del bot"""
+        embed = discord.Embed(
+            title="📊 Estado del Bot",
+            color=0x00aaff
+        )
+        
+        # Estado de conexión de voz
+        if ctx.voice_client:
+            if ctx.voice_client.is_connected():
+                voice_status = f"✅ Conectado a **{ctx.voice_client.channel.name}**"
+                if ctx.voice_client.is_playing():
+                    voice_status += "\n🎵 Reproduciendo música"
+                elif ctx.voice_client.is_paused():
+                    voice_status += "\n⏸️ Música pausada"
+                else:
+                    voice_status += "\n⏹️ Sin reproducir"
+            else:
+                voice_status = "⚠️ Cliente existe pero desconectado"
+        else:
+            voice_status = "❌ No conectado"
+        
+        embed.add_field(name="🔊 Conexión de Voz", value=voice_status, inline=False)
+        
+        # Estado de la cola
+        guild_id_str = str(ctx.guild.id)
+        if guild_id_str in SONG_QUEUES and SONG_QUEUES[guild_id_str]:
+            queue_count = len(SONG_QUEUES[guild_id_str])
+            queue_status = f"📋 {queue_count} canciones en cola"
+        else:
+            queue_status = "📋 Cola vacía"
+        
+        embed.add_field(name="🎵 Cola de Música", value=queue_status, inline=False)
+        
+        # Estado del usuario
+        if ctx.author.voice:
+            user_status = f"✅ En **{ctx.author.voice.channel.name}**"
+        else:
+            user_status = "❌ No está en canal de voz"
+        
+        embed.add_field(name="👤 Tu Estado", value=user_status, inline=False)
+        
+        await ctx.send(embed=embed)
+
 # Configuración del bot
 intents = discord.Intents.default()
 intents.message_content = True
@@ -242,6 +359,7 @@ async def help_command(ctx):
     
     commands_list = [
         ("!join [canal]", "Conecta el bot al canal de voz"),
+        ("!forceconnect [canal]", "Conexión forzada para error 4006"),
         ("!play [búsqueda]", "Reproduce una canción"),
         ("!pause", "Pausa la música"),
         ("!resume", "Reanuda la música"),
@@ -249,11 +367,13 @@ async def help_command(ctx):
         ("!stop", "Detiene la música y limpia la cola"),
         ("!queue", "Muestra la cola de reproducción"),
         ("!disconnect", "Desconecta el bot"),
+        ("!status", "Muestra el estado actual del bot"),
     ]
     
     for command, description in commands_list:
         embed.add_field(name=command, value=description, inline=False)
     
+    embed.set_footer(text="💡 Si hay problemas de conexión (error 4006), usa !forceconnect")
     await ctx.send(embed=embed)
 
 async def main():
