@@ -71,6 +71,17 @@ def get_ytdl_options():
         'geo_bypass_country': 'US',
     }
 
+def get_simple_ytdl_options():
+    """Opciones simplificadas basadas en el código que funciona"""
+    return {
+        "format": "bestaudio[abr<=96]/bestaudio",
+        "noplaylist": True,
+        "youtube_include_dash_manifest": False,
+        "youtube_include_hls_manifest": False,
+        "quiet": True,
+        "no_warnings": True,
+    }
+
 # Variables globales para control de rate limiting
 last_request_time = 0
 request_count = 0
@@ -95,6 +106,23 @@ ffmpeg_stream_options = {
 ffmpeg_simple_options = {
     'before_options': '-nostdin',
     'options': '-vn'
+}
+
+# Opciones ultra básicas para Railway
+ffmpeg_basic_options = {
+    'options': '-vn'
+}
+
+# Configuración específica para Railway (sin opciones problemáticas)
+railway_ffmpeg_options = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn -f s16le -ar 48000 -ac 2'
+}
+
+# Opciones optimizadas para Discord Opus (del código que funciona)
+opus_ffmpeg_options = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+    'options': '-vn -c:a libopus -b:a 96k'
 }
 
 # Buscar FFmpeg en ubicaciones comunes
@@ -290,30 +318,36 @@ def create_audio_source(url, attempt=1):
     """Crea fuente de audio con fallbacks progresivos"""
     try:
         if attempt == 1:
-            # Primer intento: opciones para streams
-            if 'soundcloud' in url.lower() or 'playlist' in url.lower() or '.opus' in url.lower():
-                print(f"🔄 Intento {attempt}: Opciones para stream")
-                return discord.FFmpegPCMAudio(url, executable=ffmpeg_path, **ffmpeg_stream_options)
-            else:
-                print(f"🔄 Intento {attempt}: Opciones estándar")
-                return discord.FFmpegPCMAudio(url, executable=ffmpeg_path, **ffmpeg_options)
+            # Primer intento: ¡OPUS AUDIO! (formato nativo de Discord)
+            print(f"🔄 Intento {attempt}: FFmpegOpusAudio (formato nativo Discord)")
+            return discord.FFmpegOpusAudio(url, executable=ffmpeg_path, **opus_ffmpeg_options)
         
         elif attempt == 2:
-            # Segundo intento: opciones simples
-            print(f"🔄 Intento {attempt}: Opciones simples")
-            return discord.FFmpegPCMAudio(url, executable=ffmpeg_path, **ffmpeg_simple_options)
+            # Segundo intento: OpusAudio sin executable específico
+            print(f"🔄 Intento {attempt}: FFmpegOpusAudio sin executable")
+            return discord.FFmpegOpusAudio(url, **opus_ffmpeg_options)
         
         elif attempt == 3:
-            # Tercer intento: FFmpeg del sistema sin ruta específica
-            print(f"🔄 Intento {attempt}: FFmpeg del sistema")
-            return discord.FFmpegPCMAudio(url, **ffmpeg_simple_options)
+            # Tercer intento: OpusAudio básico
+            print(f"🔄 Intento {attempt}: FFmpegOpusAudio básico")
+            return discord.FFmpegOpusAudio(url)
+        
+        elif attempt == 4:
+            # Cuarto intento: PCM básico como fallback
+            print(f"🔄 Intento {attempt}: FFmpegPCMAudio básico")
+            return discord.FFmpegPCMAudio(url, **ffmpeg_basic_options)
+        
+        elif attempt == 5:
+            # Quinto intento: PCM sin opciones
+            print(f"🔄 Intento {attempt}: FFmpegPCMAudio sin opciones")
+            return discord.FFmpegPCMAudio(url)
         
         else:
             raise Exception("Se agotaron los intentos de configuración")
             
     except Exception as e:
         print(f"❌ Error en intento {attempt}: {e}")
-        if attempt < 3:
+        if attempt < 5:
             return create_audio_source(url, attempt + 1)
         else:
             raise e
@@ -1008,6 +1042,202 @@ class MusicBot(commands.Cog):
             )
             await ctx.send(embed=embed)
 
+    @commands.command(name='versions', aliases=['deps'])
+    async def check_versions(self, ctx):
+        """Muestra las versiones de las dependencias críticas"""
+        embed = discord.Embed(
+            title="📦 Versiones de Dependencias",
+            color=0x00ffff
+        )
+        
+        try:
+            # Discord.py version
+            embed.add_field(
+                name="discord.py",
+                value=f"`{discord.__version__}`",
+                inline=True
+            )
+        except:
+            embed.add_field(name="discord.py", value="❌ No disponible", inline=True)
+        
+        try:
+            # yt-dlp version
+            embed.add_field(
+                name="yt-dlp",
+                value=f"`{yt_dlp.version.__version__}`",
+                inline=True
+            )
+        except:
+            embed.add_field(name="yt-dlp", value="❌ No disponible", inline=True)
+        
+        try:
+            # Python version
+            import sys
+            embed.add_field(
+                name="Python",
+                value=f"`{sys.version.split()[0]}`",
+                inline=True
+            )
+        except:
+            embed.add_field(name="Python", value="❌ No disponible", inline=True)
+        
+        try:
+            # PyNaCl version (importante para audio)
+            import nacl
+            embed.add_field(
+                name="PyNaCl",
+                value=f"`{nacl.__version__}`",
+                inline=True
+            )
+        except:
+            embed.add_field(name="PyNaCl", value="❌ No disponible", inline=True)
+        
+        try:
+            # FFmpeg version desde subprocess
+            import subprocess
+            result = subprocess.run([ffmpeg_path, '-version'], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                version_line = result.stdout.split('\n')[0]
+                ffmpeg_version = version_line.split()[2] if len(version_line.split()) > 2 else "Desconocida"
+                embed.add_field(
+                    name="FFmpeg",
+                    value=f"`{ffmpeg_version}`",
+                    inline=True
+                )
+            else:
+                embed.add_field(name="FFmpeg", value="❌ Error al obtener versión", inline=True)
+        except:
+            embed.add_field(name="FFmpeg", value="❌ No disponible", inline=True)
+        
+        # Información del entorno
+        try:
+            import platform
+            embed.add_field(
+                name="Sistema",
+                value=f"`{platform.system()} {platform.release()}`",
+                inline=True
+            )
+        except:
+            embed.add_field(name="Sistema", value="❌ No disponible", inline=True)
+        
+        await ctx.send(embed=embed)
+
+    @commands.command(name='testminimal', aliases=['min'])
+    async def test_minimal(self, ctx):
+        """Prueba ultra básica sin opciones de FFmpeg"""
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
+            await ctx.send("❌ **Debes conectarte a un canal de voz primero con `!join`.**")
+            return
+        
+        # URL de prueba muy simple
+        test_url = "https://www.soundjay.com/misc/sounds/bell-ringing-05.mp3"
+        
+        try:
+            await ctx.send("⚙️ **Prueba ultra minimalista...**")
+            
+            print(f"🔧 Prueba minimal con: {test_url}")
+            
+            # Crear reproductor sin ninguna opción personalizada
+            audio_source = discord.FFmpegPCMAudio(test_url)
+            
+            def after_minimal(error):
+                if error:
+                    print(f"❌ Error en prueba minimal: {error}")
+                    asyncio.run_coroutine_threadsafe(
+                        ctx.send(f"❌ **Error en prueba minimal:** {str(error)[:200]}"),
+                        ctx.bot.loop
+                    )
+                else:
+                    print("✅ Prueba minimal exitosa")
+                    asyncio.run_coroutine_threadsafe(
+                        ctx.send("✅ **¡Prueba minimal exitosa!**"),
+                        ctx.bot.loop
+                    )
+            
+            ctx.voice_client.play(audio_source, after=after_minimal)
+            
+            await ctx.send("🎯 **Prueba iniciada - configuración discord.py por defecto**")
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Error en prueba minimal: {error_msg}")
+            
+            embed = discord.Embed(
+                title="❌ Error en Prueba Minimal",
+                description=f"Error: {error_msg[:300]}",
+                color=0xff0000
+            )
+            await ctx.send(embed=embed)
+
+    @commands.command(name='testopus', aliases=['opus'])
+    async def test_opus(self, ctx, *, query="test"):
+        """Prueba con OpusAudio y configuración simplificada (basado en código que funciona)"""
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
+            await ctx.send("❌ **Debes conectarte a un canal de voz primero con `!join`.**")
+            return
+        
+        try:
+            await ctx.send(f"🎵 **Probando OpusAudio con búsqueda: {query}**")
+            
+            # Usar la configuración simplificada del código que funciona
+            ydl_options = get_simple_ytdl_options()
+            
+            # Buscar de forma simple como en el código que funciona
+            search_query = f"ytsearch1:{query}"
+            print(f"🔍 Búsqueda simple: {search_query}")
+            
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_options).extract_info(search_query, download=False))
+            
+            tracks = data.get("entries", [])
+            if not tracks:
+                await ctx.send("❌ **No se encontraron resultados.**")
+                return
+            
+            first_track = tracks[0]
+            audio_url = first_track["url"]
+            title = first_track.get("title", "Untitled")
+            
+            print(f"🎵 Encontrado: {title}")
+            print(f"🔗 URL: {audio_url[:100]}...")
+            
+            # Crear OpusAudio como en el código que funciona
+            source = discord.FFmpegOpusAudio(
+                audio_url, 
+                executable=ffmpeg_path,
+                **opus_ffmpeg_options
+            )
+            
+            def after_opus_test(error):
+                if error:
+                    print(f"❌ Error en test OpusAudio: {error}")
+                    asyncio.run_coroutine_threadsafe(
+                        ctx.send(f"❌ **Error en OpusAudio:** {str(error)[:200]}"),
+                        ctx.bot.loop
+                    )
+                else:
+                    print("✅ Test OpusAudio exitoso")
+                    asyncio.run_coroutine_threadsafe(
+                        ctx.send(f"✅ **¡OpusAudio funcionó! Reproduciendo:** {title}"),
+                        ctx.bot.loop
+                    )
+            
+            ctx.voice_client.play(source, after=after_opus_test)
+            
+            await ctx.send(f"🎯 **Iniciando test OpusAudio:** {title}")
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Error en test OpusAudio: {error_msg}")
+            
+            embed = discord.Embed(
+                title="❌ Error en Test OpusAudio",
+                description=f"Error: {error_msg[:300]}",
+                color=0xff0000
+            )
+            await ctx.send(embed=embed)
+
 # Configuración del bot
 intents = discord.Intents.default()
 intents.message_content = True
@@ -1047,6 +1277,9 @@ async def help_command(ctx):
         ("`!testffmpeg`", "Prueba si FFmpeg está funcionando correctamente"),
         ("`!testaudio`", "Prueba la reproducción de audio con una URL de prueba"),
         ("`!teststream`", "Prueba la reproducción con un stream en vivo"),
+        ("`!versions`", "Muestra las versiones de las dependencias críticas"),
+        ("`!testminimal`", "Prueba ultra básica sin opciones de FFmpeg"),
+        ("`!testopus`", "Prueba con OpusAudio y configuración simplificada (basado en código que funciona)"),
         ("`!help`", "Muestra este mensaje de ayuda")
     ]
     
