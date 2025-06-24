@@ -92,13 +92,21 @@ def find_ffmpeg():
         print(f"✅ FFmpeg encontrado via which: {which_result}")
         return which_result
     
+    # Buscar en directorios nixpacks (Railway)
+    import glob
+    nix_paths = glob.glob('/nix/store/*/bin/ffmpeg')
+    if nix_paths:
+        ffmpeg_nix = nix_paths[0]
+        print(f"✅ FFmpeg encontrado en nixpacks: {ffmpeg_nix}")
+        return ffmpeg_nix
+    
     # Ubicaciones específicas para diferentes sistemas
     possible_paths = [
-        # Linux/Railway ubicaciones comunes
+        # Linux ubicaciones comunes
         '/usr/bin/ffmpeg',
         '/usr/local/bin/ffmpeg', 
         '/bin/ffmpeg',
-        '/app/.apt/usr/bin/ffmpeg',  # Railway specific
+        '/app/.apt/usr/bin/ffmpeg',
         '/opt/ffmpeg/bin/ffmpeg',
         # Windows ubicaciones
         'C:\\ffmpeg\\bin\\ffmpeg.exe',
@@ -720,11 +728,24 @@ class MusicBot(commands.Cog):
         
         if ffmpeg_path:
             if os.path.isfile(ffmpeg_path):
-                ffmpeg_status = "✅ Encontrado"
+                ffmpeg_status = "✅ Encontrado y verificado"
                 ffmpeg_details = f"Ubicación: `{ffmpeg_path}`"
             else:
                 ffmpeg_status = "⚠️  Configurado pero no verificado"
                 ffmpeg_details = f"Configurado como: `{ffmpeg_path}`"
+                
+                # Intentar ejecutar ffmpeg para verificar si funciona
+                try:
+                    import subprocess
+                    result = subprocess.run([ffmpeg_path, '-version'], 
+                                          capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        ffmpeg_status = "✅ Funciona correctamente"
+                        ffmpeg_details = f"Executable: `{ffmpeg_path}` (disponible en PATH)"
+                    else:
+                        ffmpeg_details += f"\n❌ Error al ejecutar: {result.stderr[:100]}"
+                except Exception as e:
+                    ffmpeg_details += f"\n❌ Error al verificar: {str(e)[:100]}"
         
         embed.add_field(
             name="FFmpeg",
@@ -774,6 +795,68 @@ class MusicBot(commands.Cog):
         embed.set_footer(text="Usa este comando para diagnosticar problemas")
         await ctx.send(embed=embed)
 
+    @commands.command(name='testffmpeg', aliases=['testff'])
+    async def test_ffmpeg(self, ctx):
+        """Prueba si FFmpeg está funcionando correctamente"""
+        try:
+            import subprocess
+            
+            # Intentar ejecutar FFmpeg con información de versión
+            result = subprocess.run([ffmpeg_path, '-version'], 
+                                  capture_output=True, text=True, timeout=10)
+            
+            if result.returncode == 0:
+                # Extraer la primera línea con la versión
+                version_line = result.stdout.split('\n')[0] if result.stdout else "Versión no disponible"
+                
+                embed = discord.Embed(
+                    title="✅ FFmpeg Test Exitoso",
+                    description=f"FFmpeg está funcionando correctamente!",
+                    color=0x00ff00
+                )
+                embed.add_field(
+                    name="Versión",
+                    value=f"```{version_line}```",
+                    inline=False
+                )
+                embed.add_field(
+                    name="Ubicación",
+                    value=f"`{ffmpeg_path}`",
+                    inline=False
+                )
+            else:
+                embed = discord.Embed(
+                    title="❌ FFmpeg Test Fallido",
+                    description="FFmpeg no está funcionando correctamente",
+                    color=0xff0000
+                )
+                embed.add_field(
+                    name="Error",
+                    value=f"```{result.stderr[:500]}```",
+                    inline=False
+                )
+                
+        except subprocess.TimeoutExpired:
+            embed = discord.Embed(
+                title="⏱️ FFmpeg Test Timeout",
+                description="FFmpeg tardó demasiado en responder",
+                color=0xffaa00
+            )
+        except FileNotFoundError:
+            embed = discord.Embed(
+                title="❌ FFmpeg No Encontrado",
+                description=f"No se pudo encontrar FFmpeg en `{ffmpeg_path}`",
+                color=0xff0000
+            )
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ Error en Test",
+                description=f"Error inesperado: {str(e)}",
+                color=0xff0000
+            )
+        
+        await ctx.send(embed=embed)
+
 # Configuración del bot
 intents = discord.Intents.default()
 intents.message_content = True
@@ -810,6 +893,7 @@ async def help_command(ctx):
         ("`!now`", "Muestra la canción actual"),
         ("`!reconnect`", "Reconecta el bot si hay problemas"),
         ("`!diagnostics`", "Muestra información de diagnóstico del sistema"),
+        ("`!testffmpeg`", "Prueba si FFmpeg está funcionando correctamente"),
         ("`!help`", "Muestra este mensaje de ayuda")
     ]
     
