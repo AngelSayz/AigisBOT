@@ -84,23 +84,40 @@ ffmpeg_options = {
 }
 
 # Buscar FFmpeg en ubicaciones comunes
-ffmpeg_path = '/usr/bin/ffmpeg'
-if not ffmpeg_path:
-    # Intentar ubicaciones comunes de FFmpeg en Windows
+def find_ffmpeg():
+    """Busca FFmpeg en múltiples ubicaciones posibles"""
     possible_paths = [
+        # Linux/Railway ubicaciones comunes
+        '/usr/bin/ffmpeg',
+        '/usr/local/bin/ffmpeg', 
+        '/bin/ffmpeg',
+        '/opt/ffmpeg/bin/ffmpeg',
+        # Usar shutil.which como primera opción
+        shutil.which('ffmpeg'),
+        # Windows ubicaciones
         'C:\\ffmpeg\\bin\\ffmpeg.exe',
         'C:\\ffmpeg\\ffmpeg.exe',
-        'ffmpeg.exe'
+        'ffmpeg.exe',
+        'ffmpeg'
     ]
+    
     for path in possible_paths:
-        if os.path.exists(path):
-            ffmpeg_path = path
-            break
+        if path and os.path.isfile(path):
+            print(f"✅ FFmpeg encontrado en: {path}")
+            return path
+        elif path:
+            print(f"🔍 Verificando: {path} - No encontrado")
+    
+    print("⚠️  FFmpeg no encontrado en ubicaciones estándar")
+    return None
 
-if ffmpeg_path:
-    print(f"✅ FFmpeg encontrado en: {ffmpeg_path}")
-else:
-    print("⚠️  FFmpeg no encontrado. Descárgalo desde https://ffmpeg.org/")
+ffmpeg_path = find_ffmpeg()
+
+# Si no se encuentra FFmpeg, intentar instalarlo en Railway
+if not ffmpeg_path:
+    print("🔧 Intentando usar FFmpeg del sistema...")
+    # En Railway, FFmpeg debería estar disponible como 'ffmpeg'
+    ffmpeg_path = 'ffmpeg'
 
 async def apply_rate_limit():
     """Aplica rate limiting para evitar spam a YouTube"""
@@ -221,10 +238,16 @@ class YTDLSource(discord.PCMVolumeTransformer):
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         
         # Usar la ruta de FFmpeg encontrada si está disponible
-        if ffmpeg_path and ffmpeg_path != 'ffmpeg':
-            return cls(discord.FFmpegPCMAudio(filename, executable=ffmpeg_path, **ffmpeg_options), data=data)
-        else:
-            return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+        try:
+            if ffmpeg_path and ffmpeg_path != 'ffmpeg':
+                return cls(discord.FFmpegPCMAudio(filename, executable=ffmpeg_path, **ffmpeg_options), data=data)
+            else:
+                return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+        except Exception as e:
+            if "was not found" in str(e) or "ffmpeg" in str(e).lower():
+                raise Exception(f"FFmpeg no está instalado o no se puede encontrar. Error: {str(e)}")
+            else:
+                raise e
 
 class MusicQueue:
     def __init__(self):
@@ -686,6 +709,74 @@ class MusicBot(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ **Error al reconectar:** {str(e)}")
 
+    @commands.command(name='diagnostics', aliases=['diag', 'info'])
+    async def diagnostics(self, ctx):
+        """Muestra información de diagnóstico del sistema"""
+        embed = discord.Embed(
+            title="🔧 Diagnóstico del Sistema",
+            color=0x00ffff
+        )
+        
+        # Verificar FFmpeg
+        ffmpeg_status = "❌ No encontrado"
+        ffmpeg_details = "No se pudo localizar FFmpeg"
+        
+        if ffmpeg_path:
+            if os.path.isfile(ffmpeg_path):
+                ffmpeg_status = "✅ Encontrado"
+                ffmpeg_details = f"Ubicación: `{ffmpeg_path}`"
+            else:
+                ffmpeg_status = "⚠️  Configurado pero no verificado"
+                ffmpeg_details = f"Configurado como: `{ffmpeg_path}`"
+        
+        embed.add_field(
+            name="FFmpeg",
+            value=f"{ffmpeg_status}\n{ffmpeg_details}",
+            inline=False
+        )
+        
+        # Verificar conexión de voz
+        voice_status = "❌ No conectado"
+        if ctx.voice_client:
+            if ctx.voice_client.is_connected():
+                voice_status = f"✅ Conectado a {ctx.voice_client.channel.name}"
+            else:
+                voice_status = "⚠️  Conectado pero desconectado"
+        
+        embed.add_field(
+            name="Conexión de Voz",
+            value=voice_status,
+            inline=False
+        )
+        
+        # Verificar cola
+        queue = self.get_queue(ctx.guild.id)
+        queue_status = f"📋 {len(queue.queue)} canciones en cola"
+        if queue.current:
+            queue_status += f"\n🎵 Reproduciendo: {queue.current['title'][:50]}..."
+        
+        embed.add_field(
+            name="Estado de la Cola",
+            value=queue_status,
+            inline=False
+        )
+        
+        # Información del sistema
+        try:
+            import platform
+            system_info = f"🖥️ Sistema: {platform.system()}\n🐍 Python: {platform.python_version()}"
+        except:
+            system_info = "🖥️ Sistema: Información no disponible"
+            
+        embed.add_field(
+            name="Sistema",
+            value=system_info,
+            inline=False
+        )
+        
+        embed.set_footer(text="Usa este comando para diagnosticar problemas")
+        await ctx.send(embed=embed)
+
 # Configuración del bot
 intents = discord.Intents.default()
 intents.message_content = True
@@ -721,6 +812,7 @@ async def help_command(ctx):
         ("`!queue`", "Muestra la cola de reproducción"),
         ("`!now`", "Muestra la canción actual"),
         ("`!reconnect`", "Reconecta el bot si hay problemas"),
+        ("`!diagnostics`", "Muestra información de diagnóstico del sistema"),
         ("`!help`", "Muestra este mensaje de ayuda")
     ]
     
