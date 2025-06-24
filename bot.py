@@ -86,38 +86,35 @@ ffmpeg_options = {
 # Buscar FFmpeg en ubicaciones comunes
 def find_ffmpeg():
     """Busca FFmpeg en múltiples ubicaciones posibles"""
+    # Primero intentar con shutil.which (más confiable)
+    which_result = shutil.which('ffmpeg')
+    if which_result:
+        print(f"✅ FFmpeg encontrado via which: {which_result}")
+        return which_result
+    
+    # Ubicaciones específicas para diferentes sistemas
     possible_paths = [
         # Linux/Railway ubicaciones comunes
         '/usr/bin/ffmpeg',
         '/usr/local/bin/ffmpeg', 
         '/bin/ffmpeg',
+        '/app/.apt/usr/bin/ffmpeg',  # Railway specific
         '/opt/ffmpeg/bin/ffmpeg',
-        # Usar shutil.which como primera opción
-        shutil.which('ffmpeg'),
         # Windows ubicaciones
         'C:\\ffmpeg\\bin\\ffmpeg.exe',
         'C:\\ffmpeg\\ffmpeg.exe',
-        'ffmpeg.exe',
-        'ffmpeg'
+        'ffmpeg.exe'
     ]
     
     for path in possible_paths:
         if path and os.path.isfile(path):
             print(f"✅ FFmpeg encontrado en: {path}")
             return path
-        elif path:
-            print(f"🔍 Verificando: {path} - No encontrado")
     
-    print("⚠️  FFmpeg no encontrado en ubicaciones estándar")
-    return None
+    print("⚠️  FFmpeg no encontrado, se usará 'ffmpeg' del PATH")
+    return 'ffmpeg'  # Devolver 'ffmpeg' como fallback
 
 ffmpeg_path = find_ffmpeg()
-
-# Si no se encuentra FFmpeg, intentar instalarlo en Railway
-if not ffmpeg_path:
-    print("🔧 Intentando usar FFmpeg del sistema...")
-    # En Railway, FFmpeg debería estar disponible como 'ffmpeg'
-    ffmpeg_path = 'ffmpeg'
 
 async def apply_rate_limit():
     """Aplica rate limiting para evitar spam a YouTube"""
