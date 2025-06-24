@@ -82,7 +82,19 @@ ytdl_format_options = get_ytdl_options()
 
 ffmpeg_options = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin',
-    'options': '-vn -bufsize 1024k'
+    'options': '-vn -bufsize 1024k -ac 2 -ar 48000 -acodec pcm_s16le -loglevel error'
+}
+
+# Opciones específicas para streams de audio en vivo
+ffmpeg_stream_options = {
+    'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin -ss 0',
+    'options': '-vn -bufsize 2048k -ac 2 -ar 48000 -acodec pcm_s16le -loglevel error -avoid_negative_ts make_zero'
+}
+
+# Opciones mínimas para casos problemáticos
+ffmpeg_simple_options = {
+    'before_options': '-nostdin',
+    'options': '-vn'
 }
 
 # Buscar FFmpeg en ubicaciones comunes
@@ -251,13 +263,12 @@ class YTDLSource(discord.PCMVolumeTransformer):
         filename = data['url'] if stream else ytdl.prepare_filename(data)
         print(f"🎵 Archivo de audio: {filename[:100]}...")
         
-        # Usar la ruta de FFmpeg encontrada si está disponible
+        # Crear fuente de audio con fallbacks automáticos
         try:
             print(f"🔧 Creando reproductor con FFmpeg: {ffmpeg_path}")
-            if ffmpeg_path and ffmpeg_path != 'ffmpeg':
-                audio_source = discord.FFmpegPCMAudio(filename, executable=ffmpeg_path, **ffmpeg_options)
-            else:
-                audio_source = discord.FFmpegPCMAudio(filename, **ffmpeg_options)
+            print(f"🎵 URL de audio: {filename[:100]}...")
+            
+            audio_source = create_audio_source(filename)
             
             print(f"✅ Reproductor creado exitosamente")
             return cls(audio_source, data=data)
@@ -274,6 +285,38 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 raise Exception(f"Error de red al acceder al audio. Error: {error_str}")
             else:
                 raise Exception(f"Error de reproducción: {error_str}")
+
+def create_audio_source(url, attempt=1):
+    """Crea fuente de audio con fallbacks progresivos"""
+    try:
+        if attempt == 1:
+            # Primer intento: opciones para streams
+            if 'soundcloud' in url.lower() or 'playlist' in url.lower() or '.opus' in url.lower():
+                print(f"🔄 Intento {attempt}: Opciones para stream")
+                return discord.FFmpegPCMAudio(url, executable=ffmpeg_path, **ffmpeg_stream_options)
+            else:
+                print(f"🔄 Intento {attempt}: Opciones estándar")
+                return discord.FFmpegPCMAudio(url, executable=ffmpeg_path, **ffmpeg_options)
+        
+        elif attempt == 2:
+            # Segundo intento: opciones simples
+            print(f"🔄 Intento {attempt}: Opciones simples")
+            return discord.FFmpegPCMAudio(url, executable=ffmpeg_path, **ffmpeg_simple_options)
+        
+        elif attempt == 3:
+            # Tercer intento: FFmpeg del sistema sin ruta específica
+            print(f"🔄 Intento {attempt}: FFmpeg del sistema")
+            return discord.FFmpegPCMAudio(url, **ffmpeg_simple_options)
+        
+        else:
+            raise Exception("Se agotaron los intentos de configuración")
+            
+    except Exception as e:
+        print(f"❌ Error en intento {attempt}: {e}")
+        if attempt < 3:
+            return create_audio_source(url, attempt + 1)
+        else:
+            raise e
 
 class MusicQueue:
     def __init__(self):
@@ -923,6 +966,48 @@ class MusicBot(commands.Cog):
             )
             await ctx.send(embed=embed)
 
+    @commands.command(name='teststream', aliases=['testlive'])
+    async def test_stream(self, ctx):
+        """Prueba la reproducción con un stream en vivo"""
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
+            await ctx.send("❌ **Debes conectarte a un canal de voz primero con `!join`.**")
+            return
+        
+        # URL de stream de prueba (radio online)
+        test_stream = "http://live-radio02.mediahubaustralia.com/2LRW/mp3/"
+        
+        try:
+            await ctx.send("📡 **Probando stream en vivo...**")
+            
+            print(f"🔧 Probando stream: {test_stream}")
+            
+            audio_source = discord.FFmpegPCMAudio(
+                test_stream, 
+                executable=ffmpeg_path, 
+                **ffmpeg_stream_options
+            )
+            
+            def after_stream_test(error):
+                if error:
+                    print(f"❌ Error en test de stream: {error}")
+                else:
+                    print("✅ Test de stream completado sin errores")
+            
+            ctx.voice_client.play(audio_source, after=after_stream_test)
+            
+            await ctx.send("✅ **Test de stream iniciado. ¿Puedes escuchar la radio?**")
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Error en test de stream: {error_msg}")
+            
+            embed = discord.Embed(
+                title="❌ Error en Test de Stream",
+                description=f"Error al probar stream: {error_msg[:300]}",
+                color=0xff0000
+            )
+            await ctx.send(embed=embed)
+
 # Configuración del bot
 intents = discord.Intents.default()
 intents.message_content = True
@@ -961,6 +1046,7 @@ async def help_command(ctx):
         ("`!diagnostics`", "Muestra información de diagnóstico del sistema"),
         ("`!testffmpeg`", "Prueba si FFmpeg está funcionando correctamente"),
         ("`!testaudio`", "Prueba la reproducción de audio con una URL de prueba"),
+        ("`!teststream`", "Prueba la reproducción con un stream en vivo"),
         ("`!help`", "Muestra este mensaje de ayuda")
     ]
     
