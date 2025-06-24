@@ -5,40 +5,78 @@ import asyncio
 from collections import deque
 import os
 import logging
+import shutil
+import random
+import time
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
 
+# Lista de User Agents para rotar
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+]
+
+def get_ytdl_options():
+    """Genera opciones dinámicas para yt-dlp"""
+    user_agent = random.choice(USER_AGENTS)
+    
+    return {
+        'format': 'bestaudio/best',
+        'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
+        'restrictfilenames': True,
+        'noplaylist': True,
+        'nocheckcertificate': True,
+        'ignoreerrors': False,
+        'logtostderr': False,
+        'quiet': True,
+        'no_warnings': True,
+        'default_search': 'auto',
+        'source_address': '0.0.0.0',
+        # Configuraciones anti-detección más agresivas
+        'user_agent': user_agent,
+        'referer': 'https://www.google.com/',
+        'http_headers': {
+            'User-Agent': user_agent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,es;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+        },
+        # Configuraciones para estabilidad y evasión
+        'extractor_retries': 5,
+        'fragment_retries': 5,
+        'skip_unavailable_fragments': True,
+        'socket_timeout': 30,
+        'retries': 5,
+        # Configuraciones específicas para YouTube
+        'youtube_include_dash_manifest': False,
+        'extract_flat': False,
+        # Nuevas opciones anti-detección
+        'age_limit': None,
+        'geo_bypass': True,
+        'geo_bypass_country': 'US',
+    }
+
+# Variables globales para control de rate limiting
+last_request_time = 0
+request_count = 0
+COOLDOWN_SECONDS = 2
+MAX_REQUESTS_PER_MINUTE = 10
+
 # Configuración para yt-dlp
-ytdl_format_options = {
-    'format': 'bestaudio/best',
-    'outtmpl': '%(extractor)s-%(id)s-%(title)s.%(ext)s',
-    'restrictfilenames': True,
-    'noplaylist': True,
-    'nocheckcertificate': True,
-    'ignoreerrors': False,
-    'logtostderr': False,
-    'quiet': True,
-    'no_warnings': True,
-    'default_search': 'auto',
-    'source_address': '0.0.0.0',
-    # Configuraciones para evitar detección de bot
-    'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    'referer': 'https://www.youtube.com/',
-    'http_headers': {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-us,en;q=0.5',
-        'Accept-Encoding': 'gzip,deflate',
-        'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
-        'Keep-Alive': '115',
-        'Connection': 'keep-alive',
-    },
-    # Configuraciones adicionales para estabilidad
-    'extractor_retries': 3,
-    'fragment_retries': 3,
-    'skip_unavailable_fragments': True,
-}
+ytdl_format_options = get_ytdl_options()
 
 ffmpeg_options = {
     'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
@@ -46,7 +84,6 @@ ffmpeg_options = {
 }
 
 # Buscar FFmpeg en ubicaciones comunes
-import shutil
 ffmpeg_path = '/usr/bin/ffmpeg'
 if not ffmpeg_path:
     # Intentar ubicaciones comunes de FFmpeg en Windows
@@ -65,53 +102,96 @@ if ffmpeg_path:
 else:
     print("⚠️  FFmpeg no encontrado. Descárgalo desde https://ffmpeg.org/")
 
-ytdl = yt_dlp.YoutubeDL(ytdl_format_options)
+async def apply_rate_limit():
+    """Aplica rate limiting para evitar spam a YouTube"""
+    global last_request_time, request_count
+    
+    current_time = time.time()
+    
+    # Reset counter cada minuto
+    if current_time - last_request_time > 60:
+        request_count = 0
+    
+    # Si hemos hecho muchas requests, esperar
+    if request_count >= MAX_REQUESTS_PER_MINUTE:
+        wait_time = 60 - (current_time - last_request_time)
+        if wait_time > 0:
+            print(f"Rate limit alcanzado. Esperando {wait_time:.1f} segundos...")
+            await asyncio.sleep(wait_time)
+            request_count = 0
+    
+    # Esperar cooldown mínimo entre requests
+    if current_time - last_request_time < COOLDOWN_SECONDS:
+        sleep_time = COOLDOWN_SECONDS - (current_time - last_request_time)
+        await asyncio.sleep(sleep_time)
+    
+    last_request_time = time.time()
+    request_count += 1
 
 async def search_song(search_query, loop=None):
-    """Función mejorada para buscar canciones con manejo de errores"""
+    """Función mejorada para buscar canciones con manejo de errores y rate limiting"""
     loop = loop or asyncio.get_event_loop()
     
-    # Lista de prefijos para intentar diferentes tipos de búsqueda
+    # Aplicar rate limiting
+    await apply_rate_limit()
+    
+    # Lista de prefijos para intentar diferentes tipos de búsqueda y servicios
     search_attempts = [
-        f"ytsearch1:{search_query}",  # Búsqueda específica de YouTube
-        search_query,                 # Búsqueda automática
-        f"ytsearch:{search_query}",   # Búsqueda alternativa de YouTube
+        f"ytsearch1:{search_query}",     # YouTube búsqueda específica
+        f"scsearch1:{search_query}",     # SoundCloud como alternativa
+        search_query,                    # Búsqueda automática
+        f"ytsearch:{search_query}",      # YouTube búsqueda general
+        f"scsearch:{search_query}",      # SoundCloud búsqueda general
     ]
     
     for attempt, search_term in enumerate(search_attempts, 1):
         try:
             print(f"Intento {attempt}: Buscando con '{search_term[:50]}...'")
             
+            # Crear nueva instancia de ytdl con opciones frescas para cada intento
+            ytdl_options = get_ytdl_options()
+            ytdl = yt_dlp.YoutubeDL(ytdl_options)
+            
+            # Pequeña pausa adicional entre intentos
+            if attempt > 1:
+                await asyncio.sleep(random.uniform(1, 3))
+            
             data = await asyncio.wait_for(
                 loop.run_in_executor(None, lambda: ytdl.extract_info(search_term, download=False)),
-                timeout=25.0
+                timeout=30.0
             )
             
             if 'entries' in data and len(data['entries']) > 0:
                 # Tomar la primera entrada válida
                 for entry in data['entries']:
                     if entry and entry.get('url'):
+                        print(f"✅ Encontrado en intento {attempt}: {entry.get('title', 'Sin título')}")
                         return entry
                 continue
             elif data and data.get('url'):
+                print(f"✅ Encontrado en intento {attempt}: {data.get('title', 'Sin título')}")
                 return data
                 
         except asyncio.TimeoutError:
-            print(f"Timeout en intento {attempt}")
+            print(f"⏱️ Timeout en intento {attempt}")
             continue
         except Exception as e:
             error_msg = str(e).lower()
-            print(f"Error en intento {attempt}: {e}")
+            print(f"❌ Error en intento {attempt}: {e}")
             
-            # Si es el error específico de bot de YouTube, intentar con otros métodos
+            # Si es el error específico de bot de YouTube, intentar con otros servicios
             if "sign in to confirm" in error_msg or "bot" in error_msg:
+                print("🤖 Detección de bot - probando siguiente método...")
+                continue
+            elif "video unavailable" in error_msg or "private video" in error_msg:
+                print("📹 Video no disponible - probando siguiente método...")
                 continue
             elif attempt == len(search_attempts):  # Último intento
                 raise e
             else:
                 continue
     
-    raise Exception("No se pudieron encontrar resultados después de múltiples intentos")
+    raise Exception("No se pudieron encontrar resultados después de múltiples intentos con diferentes servicios")
 
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, volume=0.5):
@@ -124,6 +204,14 @@ class YTDLSource(discord.PCMVolumeTransformer):
     @classmethod
     async def from_url(cls, url, *, loop=None, stream=False):
         loop = loop or asyncio.get_event_loop()
+        
+        # Aplicar rate limiting
+        await apply_rate_limit()
+        
+        # Crear instancia fresca de ytdl para cada request
+        ytdl_options = get_ytdl_options()
+        ytdl = yt_dlp.YoutubeDL(ytdl_options)
+        
         data = await loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=not stream))
 
         if 'entries' in data:
@@ -336,17 +424,28 @@ class MusicBot(commands.Cog):
             # Procesar URL directamente
             search_msg = await ctx.send("🔗 **Procesando URL...**")
             
+            # Aplicar rate limiting
+            await apply_rate_limit()
+            
+            # Crear instancia fresca de ytdl
+            ytdl_options = get_ytdl_options()
+            ytdl = yt_dlp.YoutubeDL(ytdl_options)
+            
             loop = asyncio.get_event_loop()
             try:
                 data = await asyncio.wait_for(
                     loop.run_in_executor(None, lambda: ytdl.extract_info(url, download=False)),
-                    timeout=25.0
+                    timeout=30.0
                 )
             except asyncio.TimeoutError:
                 await search_msg.edit(content="❌ **Procesamiento demoró demasiado.**")
                 return
             except Exception as e:
-                await search_msg.edit(content=f"❌ **Error al procesar URL:** {str(e)}")
+                error_msg = str(e).lower()
+                if "sign in to confirm" in error_msg or "bot" in error_msg:
+                    await search_msg.edit(content="❌ **YouTube está bloqueando las requests. Intenta con otro servicio o espera unos minutos.**")
+                else:
+                    await search_msg.edit(content=f"❌ **Error al procesar URL:** {str(e)}")
                 return
 
             if 'entries' in data:
@@ -383,6 +482,76 @@ class MusicBot(commands.Cog):
 
         except Exception as e:
             await ctx.send(f"❌ **Error al procesar URL:** {str(e)}")
+
+    @commands.command(name='soundcloud', aliases=['sc'])
+    async def play_soundcloud(self, ctx, *, search):
+        """Busca y reproduce música específicamente desde SoundCloud"""
+        
+        # Verificar que el bot esté conectado a un canal de voz
+        if not ctx.voice_client or not ctx.voice_client.is_connected():
+            await ctx.send("❌ **El bot no está conectado a un canal de voz. Usa `!join` primero.**")
+            return
+
+        try:
+            # Buscar en SoundCloud específicamente
+            search_msg = await ctx.send("🎵 **Buscando en SoundCloud...**")
+            
+            # Aplicar rate limiting
+            await apply_rate_limit()
+            
+            # Crear instancia fresca de ytdl
+            ytdl_options = get_ytdl_options()
+            ytdl = yt_dlp.YoutubeDL(ytdl_options)
+            
+            search_term = f"scsearch1:{search}"
+            
+            loop = asyncio.get_event_loop()
+            try:
+                data = await asyncio.wait_for(
+                    loop.run_in_executor(None, lambda: ytdl.extract_info(search_term, download=False)),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                await search_msg.edit(content="❌ **Búsqueda en SoundCloud demoró demasiado.**")
+                return
+            except Exception as e:
+                await search_msg.edit(content=f"❌ **Error al buscar en SoundCloud:** {str(e)}")
+                return
+
+            if 'entries' in data and len(data['entries']) > 0:
+                data = data['entries'][0]
+            elif not data or not data.get('url'):
+                await search_msg.edit(content="❌ **No se encontraron resultados en SoundCloud.**")
+                return
+
+            song_info = {
+                'title': data.get('title', 'Título desconocido'),
+                'url': data.get('webpage_url', data.get('url')),
+                'duration': data.get('duration'),
+                'uploader': data.get('uploader', 'SoundCloud')
+            }
+
+            queue = self.get_queue(ctx.guild.id)
+            queue.add(song_info)
+
+            # Si no hay música reproduciéndose, empezar a reproducir
+            if not queue.is_playing and not ctx.voice_client.is_playing():
+                await search_msg.delete()
+                await self.play_next(ctx)
+            else:
+                # Mostrar que se añadió a la cola
+                position = len(queue.queue)
+                duration_str = f"{song_info['duration'] // 60}:{song_info['duration'] % 60:02d}" if song_info['duration'] else "Desconocida"
+                
+                embed = discord.Embed(
+                    title="📋 Añadida a la cola (SoundCloud)",
+                    description=f"**{song_info['title']}**\n⏱️ Duración: {duration_str}\n📍 Posición en cola: {position}\n🎵 Fuente: SoundCloud",
+                    color=0xff5500
+                )
+                await search_msg.edit(content="", embed=embed)
+
+        except Exception as e:
+            await ctx.send(f"❌ **Error con SoundCloud:** {str(e)}")
 
     @commands.command(name='pause')
     async def pause(self, ctx):
@@ -543,6 +712,7 @@ async def help_command(ctx):
         ("`!join [canal]`", "Conecta el bot a un canal de voz (usa tu canal actual si no especificas)"),
         ("`!play [búsqueda]`", "Busca y añade una canción a la cola"),
         ("`!url [URL_directa]`", "Añade una canción usando URL directa (recomendado si falla !play)"),
+        ("`!soundcloud [búsqueda]`", "Busca y reproduce música específicamente desde SoundCloud"),
         ("`!pause`", "Pausa la música actual"),
         ("`!resume`", "Reanuda la música pausada"),
         ("`!skip`", "Salta a la siguiente canción"),
